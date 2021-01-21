@@ -112,6 +112,68 @@ def parse_all_nodes(filename, node_map):
     f.close()
     pb.close()
 
+def parse_path_nodes(json_string, path_map, outputfile):
+    """Parse a CamFlow JSON string that may contain nodes ("activity" or "entity").
+    Parsed nodes populate @node_map, which is a dictionary that maps the node's UID,
+    which is assigned by CamFlow to uniquely identify a node object, to a hashed
+    value (in str) which represents the 'type' of the node. """
+    try:
+        # use "ignore" if non-decodeable exists in the @json_string
+        json_object = json.loads(json_string.decode("utf-8","ignore"))
+    except Exception as e:
+        print("Exception ({}) occurred when parsing a node in JSON:".format(e))
+        print(json_string)
+        exit(1)
+    if "activity" in json_object:
+        activity = json_object["activity"]
+        for uid in activity:
+            if not uid in path_map:     # only parse unseen nodes
+                if "prov:type" not in activity[uid]:
+                    # a node must have a type.
+                    # record this issue if logging is turned on
+                    if CONSOLE_ARGUMENTS.verbose:
+                        logging.debug("skipping a problematic activity node with no 'prov:type': {}".format(uid))
+                else:
+                    curr_log = activity[uid]
+                    if curr_log["prov:type"] == "path":
+                        if "cf:jiffies" in curr_log and "cf:pathname" in curr_log:
+                            path_map[uid] = [curr_log["cf:jiffies"], curr_log["cf:pathname"]]
+
+    if "entity" in json_object:
+        entity = json_object["entity"]
+        for uid in entity:
+            if not uid in path_map:
+                if "prov:type" not in entity[uid]:
+                    if CONSOLE_ARGUMENTS.verbose:
+                        logging.debug("skipping a problematic entity node with no 'prov:type': {}".format(uid))
+                else:
+                    curr_log = entity[uid]
+                    if curr_log["prov:type"] == "path":
+                        if "cf:jiffies" in curr_log and "cf:pathname" in curr_log:
+                            path_map[uid] = [curr_log["cf:jiffies"], curr_log["cf:pathname"]]
+
+
+def parse_all_path_nodes(filename, outputfile, path_map):
+    """Parse all nodes in CamFlow data. @filename is the file path of
+    the CamFlow data to parse. @node_map contains the mappings of all
+    CamFlow nodes to their hashed attributes. """
+    description = '\x1b[6;30;42m[STATUS]\x1b[0m Parsing path nodes in CamFlow data from {}'.format(filename)
+    pb = tqdm.tqdm(desc=description, mininterval=1.0, unit=" recs")
+    with open(filename, 'r') as f:
+        # each line in CamFlow data could contain multiple
+        # provenance nodes, we call @parse_nodes routine.
+        for line in f:
+            pb.update()                 # for progress tracking
+            parse_path_nodes(line, path_map, outputfile)
+    f.close()
+    pb.close()
+
+    output = open(outputfile, "w+")
+    for key in path_map.keys():
+        curr_vall = path_map[key]
+        output.write("{}:{}:{}\n".format(key, curr_vall[0], curr_vall[1]))
+
+
 
 def parse_all_edges(inputfile, outputfile, node_map, noencode):
     """Parse all edges (including their timestamp) from CamFlow data file @inputfile
@@ -279,7 +341,7 @@ def parse_all_edges(inputfile, outputfile, node_map, noencode):
                         continue
                     else:
                         timestamp = used[uid]["cf:id"]
-		    if "prov:entity" not in used[uid]:
+                    if "prov:entity" not in used[uid]:
                         # an edge's source node must exist;
                         # if not, we will have to skip the
                         # edge. Log this issue if verbose is set.
@@ -345,7 +407,7 @@ def parse_all_edges(inputfile, outputfile, node_map, noencode):
                             output.write("{}\t{}\t{}:{}:{}:{}:{}\n".format(srcUUID, dstUUID, srcVal, dstVal, edgetype, timestamp, jiffies))
                         else:
                             output.write("{}\t{}\t{}:{}:{}:{}\n".format(srcUUID, dstUUID, srcVal, dstVal, edgetype, timestamp))
-		    else:
+                    else:
                         if CONSOLE_ARGUMENTS.stats:
                             output.write("{}\t{}\t{}:{}:{}:{}:{}\n".format(hashgen([srcUUID]), hashgen([dstUUID]), srcVal, dstVal, edgetype, timestamp, adjusted_ts))
                         elif CONSOLE_ARGUMENTS.jiffies:
@@ -644,6 +706,8 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--stats', help='record some statistics of the CamFlow graph data and runtime graph generation speed (default is false)', action='store_true')
     parser.add_argument('-f', '--stats-file', help='file path to record the statistics (only valid if -s is set; default is stats.csv)', default='stats.csv')
     parser.add_argument('-t', '--jiffies', help='record jiffies of the CamFlow graph data. This option can be overwritten by "-s"', action='store_true')
+    parser.add_argument('-O', '--outputPath', help='output path_dict file path', action='store')
+    parser.add_argument('-p', '--path', help='record nodes with prov:type of path to understand prov.log behaviour', action='store_true')
     args = parser.parse_args()
 
     CONSOLE_ARGUMENTS = args
@@ -651,9 +715,16 @@ if __name__ == "__main__":
     if args.verbose:
         logging.basicConfig(filename=args.log, level=logging.DEBUG)
 
-    node_map = dict()
-    parse_all_nodes(args.input, node_map)
-    total_edges = parse_all_edges(args.input, args.output, node_map, args.noencode)
+    if args.outputPath and args.path:
+        node_map = dict()
+        path_map = dict()
+        parse_all_path_nodes(args.input, args.outputPath, path_map)
+        parse_all_nodes(args.input, node_map)
+        total_edges = parse_all_edges(args.input, args.output, node_map, args.noencode)
+    else:
+        node_map = dict()
+        parse_all_nodes(args.input, node_map)
+        total_edges = parse_all_edges(args.input, args.output, node_map, args.noencode)
 
     if args.stats:
         total_nodes = len(node_map)
